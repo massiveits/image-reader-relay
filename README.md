@@ -17,7 +17,7 @@ Add the plugin to your config (`kilo.json` in a project, or global `~/.config/ki
 ```jsonc
 {
   "plugin": [
-    ["your-github-user/image-reader-relay", { "model": "clinepass/cline-pass/mimo-v2.5" }]
+    ["massiveits/image-reader-relay", { "model": "clinepass/cline-pass/mimo-v2.5" }]
   ]
 }
 ```
@@ -35,7 +35,7 @@ Changing the model later is just editing the `model` option — no plugin file c
 
 ## How it works
 
-- `chat.message` hook detects image parts and stashes them per session (last 5 images, 30-minute expiry; vision-capable models are skipped).
+- `chat.message` hook detects image parts and stashes them per session (last 10 images, 30-minute expiry; vision-capable models are skipped).
 - `read_image` tool (`question` + optional `imageIndex`, 0 = most recent) sends the image with a system prompt to the configured vision model and returns its answer.
 - Everything is in-memory: the relayed image never touches the filesystem.
 - A throwaway session is created per call and deleted afterwards.

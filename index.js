@@ -16,7 +16,7 @@ const relaySessionIDs = new Set()
 const visionCache = new Map()
 
 const pendingImages = new Map()
-const MAX_PENDING_IMAGES = 5
+const MAX_PENDING_IMAGES = 10
 const PENDING_TTL_MS = 30 * 60 * 1000
 
 const isImagePart = (p) =>
@@ -165,11 +165,11 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
       prune()
       const entry = pendingImages.get(input.sessionID)
       const images = [
-        ...(entry?.images ?? []),
         ...imageParts.map((p) => ({ mime: p.mime, filename: p.filename, url: p.url })),
-      ]
+        ...(entry?.images ?? []),
+      ].slice(0, MAX_PENDING_IMAGES)
       pendingImages.set(input.sessionID, {
-        images: images.slice(-MAX_PENDING_IMAGES),
+        images,
         ts: Date.now(),
       })
 
@@ -178,23 +178,35 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
         images: imageParts.length,
         total: images.length,
         model: input.model,
+        textParts: parts.filter((p) => p.type === "text").length,
       })
 
+      const count = imageParts.length
       const note =
-        "[An image was pasted in this message. The main model cannot see it directly. " +
-        "Use the read_image tool to inspect it: pass the exact question you want answered " +
-        "about the image, and imageIndex 0 for this (most recent) image.]"
+        count > 1
+          ? `[${count} images were pasted in this message. The main model cannot see them directly. Use the read_image tool to inspect them: pass the exact question you want answered about them, and imageIndex 0 for the most recent image.]`
+          : "[An image was pasted in this message. The main model cannot see it directly. " +
+            "Use the read_image tool to inspect it: pass the exact question you want answered " +
+            "about the image, and imageIndex 0 for this (most recent) image.]"
 
-      for (const p of imageParts) {
-        delete p.url
-        delete p.mime
-        delete p.filename
-        delete p.source
-        p.sessionID = p.sessionID ?? input.sessionID
-        p.messageID = p.messageID ?? input.messageID
-        p.type = "text"
-        p.text = note
-      }
+      const result = parts.map((p) => {
+        if (!isImagePart(p)) return p
+        return {
+          id: p.id,
+          sessionID: p.sessionID ?? input.sessionID,
+          messageID: p.messageID ?? input.messageID,
+          type: "text",
+          text: note,
+        }
+      })
+      output.parts.splice(0, output.parts.length, ...result)
+
+      await log("info", "hook: parts rebuilt", {
+        before: parts.length,
+        after: result.length,
+        notes: imageParts.length,
+        keptTextParts: result.filter((p) => p.type === "text" && p.text !== note).length,
+      })
     },
   }
 }

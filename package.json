@@ -1,0 +1,22 @@
+{
+  "name": "image-reader-relay",
+  "version": "1.0.0",
+  "description": "Lets text-only Kilo models read pasted images via a vision model. Stashes pasted images in memory and exposes a read_image tool.",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    "./server": "./index.js"
+  },
+  "engines": {
+    "opencode": "^7.0.0"
+  },
+  "keywords": [
+    "kilo",
+    "opencode",
+    "plugin",
+    "vision",
+    "image",
+    "subagent"
+  ],
+  "license": "MIT"
+}

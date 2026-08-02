@@ -1,3 +1,6 @@
+import { readFile, stat } from "node:fs/promises"
+import { resolve } from "node:path"
+
 const DEFAULT_MODEL = "clinepass/cline-pass/mimo-v2.5"
 
 const IMAGE_READER_SYSTEM_PROMPT = `You are a vision-capable image reader agent. Your only job is to read images and report what you see.
@@ -61,6 +64,42 @@ const parseModel = (spec) => {
   }
   return { providerID: spec.slice(0, idx), modelID: spec.slice(idx + 1) }
 }
+
+const IMAGE_MIME_BY_EXT = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+  bmp: "image/bmp",
+  svg: "image/svg+xml",
+  avif: "image/avif",
+}
+const MAX_FILE_BYTES = 20 * 1024 * 1024
+
+const filePartFromPath = async (filePath, baseDir) => {
+  const abs = resolve(baseDir ?? process.cwd(), filePath)
+  const ext = abs.split(".").pop().toLowerCase()
+  const mime = IMAGE_MIME_BY_EXT[ext]
+  if (!mime) throw new Error(`unsupported image type ".${ext}" for "${filePath}"`)
+  const info = await stat(abs).catch(() => null)
+  if (!info || !info.isFile()) throw new Error(`file not found: "${filePath}"`)
+  if (info.size > MAX_FILE_BYTES) {
+    throw new Error(`file too large: ${info.size} bytes (max ${MAX_FILE_BYTES})`)
+  }
+  const data = await readFile(abs)
+  return {
+    type: "file",
+    mime,
+    filename: abs.split("/").pop(),
+    url: `data:${mime};base64,${data.toString("base64")}`,
+  }
+}
+
+const makeToolNote = (count) =>
+  count > 1
+    ? `[${count} images appear in this message. The main model cannot see them directly. Use the read_image tool with the filePath argument to inspect them.]`
+    : "[An image appears in this message. The main model cannot see it directly. Use the read_image tool with its filePath argument to inspect it.]"
 
 const ImageReaderRelay = async ({ client }, rawOptions) => {
   const options = rawOptions ?? {}
@@ -172,11 +211,15 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
     tool: {
       read_image: {
         description:
-          "Inspect an image the user pasted in this session. The main model cannot see pasted images directly, so call this tool whenever the conversation requires knowing what an image contains. Pass the exact question you want answered about the image.",
+          "Inspect an image the user pasted in this session, or an image file on disk. The main model cannot see images directly, so call this tool whenever the conversation requires knowing what an image contains. Pass the exact question you want answered about the image. Pass filePath to read an image file from disk (e.g. a tool's screenshot); otherwise pass an empty string to use a pasted image.",
         args: {
           question: {
             type: "string",
-            description: "The specific question to answer about the pasted image",
+            description: "The specific question to answer about the image",
+          },
+          filePath: {
+            type: "string",
+            description: "Absolute path to an image file on disk. Pass an empty string to use a pasted image instead.",
           },
           imageIndex: {
             type: "number",
@@ -184,25 +227,34 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
           },
         },
         async execute(args, ctx) {
-          prune(ctx.sessionID)
-          const entry = pendingImages.get(ctx.sessionID)
-          if (!entry || entry.images.length === 0) {
-            return "No pasted image is available in this session (none found, or it expired)."
-          }
-          const idx = args?.imageIndex ?? 0
-          if (!Number.isInteger(idx) || idx < 0 || idx >= entry.images.length) {
-            return `No pasted image at imageIndex ${idx}. Available: 0-${entry.images.length - 1} (0 = most recent).`
-          }
-          const target = entry.images[idx]
           const question = String(args?.question ?? "").trim() || "Describe the image plainly."
+          let filePart
           try {
-            const answer = await relayImage(target, question)
+            if (args?.filePath) {
+              filePart = await filePartFromPath(String(args.filePath), ctx.directory)
+            } else {
+              prune(ctx.sessionID)
+              const entry = pendingImages.get(ctx.sessionID)
+              if (!entry || entry.images.length === 0) {
+                return "No pasted image is available in this session (none found, or it expired). Pass filePath to read an image from disk instead."
+              }
+              const idx = args?.imageIndex ?? 0
+              if (!Number.isInteger(idx) || idx < 0 || idx >= entry.images.length) {
+                return `No pasted image at imageIndex ${idx}. Available: 0-${entry.images.length - 1} (0 = most recent).`
+              }
+              filePart = entry.images[idx]
+            }
+          } catch (err) {
+            return `[Image Reader] ${String(err)}`
+          }
+          try {
+            const answer = await relayImage(filePart, question)
             if (!answer) return "[Image Reader] The subagent returned no answer."
-            return `[Image Reader] Answer about the pasted image:\n\n${answer}`
+            return `[Image Reader] Answer about the image:\n\n${answer}`
           } catch (err) {
             const message = String(err)
             await log("error", "read_image relay failed", { sessionID: ctx.sessionID, error: message })
-            return `[Image Reader] Failed to read the pasted image: ${message}`
+            return `[Image Reader] Failed to read the image: ${message}`
           }
         },
       },
@@ -257,7 +309,9 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
       for (const message of output.messages ?? []) {
         const sessionID = message?.info?.sessionID
         if (sessionID && relaySessionIDs.has(sessionID)) continue
-        if (message?.info?.role !== "user" && message?.info?.role !== "local") continue
+        const role = message?.info?.role
+        const isUser = role === "user" || role === "local"
+        if (!isUser && role !== "assistant" && role !== "tool") continue
 
         const model = sessionModels.get(sessionID)
         if (model && (await modelSupportsImages(model))) continue
@@ -268,8 +322,8 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
         if (imageParts.length === 0) continue
 
         const stashEntry = pendingImages.get(sessionID)
-        const indices = stashEntry?.byMessage?.get(message.info.id)
-        const note = makeNote(imageParts.length, indices)
+        const indices = isUser ? stashEntry?.byMessage?.get(message.info.id) : undefined
+        const note = isUser ? makeNote(imageParts.length, indices) : makeToolNote(imageParts.length)
         parts.splice(
           0,
           parts.length,
@@ -279,6 +333,7 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
 
         await log("info", "transform: swapped images for note (model view only)", {
           sessionID,
+          role,
           images: imageParts.length,
         })
       }

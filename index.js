@@ -189,16 +189,17 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
             "Use the read_image tool to inspect it: pass the exact question you want answered " +
             "about the image, and imageIndex 0 for this (most recent) image.]"
 
-      const result = parts.map((p) => {
-        if (!isImagePart(p)) return p
-        return {
-          id: p.id,
-          sessionID: p.sessionID ?? input.sessionID,
-          messageID: p.messageID ?? input.messageID,
+      const first = imageParts[0]
+      const result = [
+        ...parts.filter((p) => !isImagePart(p)),
+        {
+          id: first.id,
+          sessionID: first.sessionID ?? input.sessionID,
+          messageID: first.messageID ?? input.messageID,
           type: "text",
           text: note,
-        }
-      })
+        },
+      ]
       output.parts.splice(0, output.parts.length, ...result)
 
       await log("info", "hook: parts rebuilt", {

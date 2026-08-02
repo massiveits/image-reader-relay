@@ -38,12 +38,18 @@ const newPartID = () => {
   return `prt_${hex}${r}`
 }
 
-const makeNote = (count) =>
-  count > 1
-    ? `[${count} images were pasted in this message. The main model cannot see them directly. Use the read_image tool to inspect them: pass the exact question you want answered about them, and imageIndex 0 for the most recent image.]`
+const makeNote = (count, indices) => {
+  const indexText =
+    indices && indices.length > 0
+      ? indices.length === 1
+        ? `imageIndex ${indices[0]}`
+        : `imageIndex ${indices.join(" or ")}`
+      : "imageIndex 0 for the most recent image"
+  return count > 1
+    ? `[${count} images were pasted in this message. The main model cannot see them directly. Use the read_image tool to inspect them: pass the exact question you want answered about them, and ${indexText}.]`
     : "[An image was pasted in this message. The main model cannot see it directly. " +
-      "Use the read_image tool to inspect it: pass the exact question you want answered " +
-      "about the image, and imageIndex 0 for this (most recent) image.]"
+      `Use the read_image tool to inspect it: pass the exact question you want answered about the image, and ${indexText}.]`
+}
 
 const parseModel = (spec) => {
   const idx = spec.indexOf("/")
@@ -76,53 +82,66 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
       for (const provider of providers) {
         if (provider.id !== model.providerID) continue
         const found = (provider.models ?? []).find((m) => m.id === model.modelID)
-        const supports = !!(found?.capabilities?.attachment ?? found?.capabilities?.input?.image)
-        visionCache.set(key, supports)
-        return supports
+        if (found) {
+          const supports = !!(found?.capabilities?.attachment ?? found?.capabilities?.input?.image)
+          visionCache.set(key, supports)
+          return supports
+        }
       }
     } catch {
-      // provider lookup failed; treat as non-vision
+      // provider lookup failed; treat as non-vision and retry on the next message (not cached)
     }
-    visionCache.set(key, false)
     return false
   }
 
   const relayImage = async (filePart, question) => {
-    let sessionID = null
-    try {
-      const created = await client.session.create({ body: { title: "image-reader-relay" } })
-      sessionID = created?.data?.id ?? created?.id
-      if (!sessionID) throw new Error("could not create relay session")
-      relaySessionIDs.add(sessionID)
+    const created = await client.session.create({ body: { title: "image-reader-relay" } })
+    const sessionID = created?.data?.id ?? created?.id
+    if (!sessionID) throw new Error("could not create relay session")
+    relaySessionIDs.add(sessionID)
 
+    const prompt = (async () => {
+      const res = await client.session.prompt({
+        path: { id: sessionID },
+        body: {
+          model: parseModel(modelSpec),
+          system: IMAGE_READER_SYSTEM_PROMPT,
+          parts: [
+            { type: "file", mime: filePart.mime, filename: filePart.filename, url: filePart.url },
+            { type: "text", text: `Answer this question about the attached image:\n\n${question}` },
+          ],
+        },
+      })
+      const parts = res?.data?.parts ?? res?.parts ?? []
+      return parts
+        .filter((p) => p.type === "text")
+        .map((p) => p.text ?? "")
+        .join("\n")
+        .trim()
+    })()
+
+    const cleanup = () => {
+      relaySessionIDs.delete(sessionID)
+      client.session.delete({ path: { id: sessionID } }).catch(() => {})
+    }
+
+    let timedOut = false
+    try {
       return await Promise.race([
-        (async () => {
-          const res = await client.session.prompt({
-            path: { id: sessionID },
-            body: {
-              model: parseModel(modelSpec),
-              system: IMAGE_READER_SYSTEM_PROMPT,
-              parts: [
-                { type: "file", mime: filePart.mime, filename: filePart.filename, url: filePart.url },
-                { type: "text", text: `Answer this question about the attached image:\n\n${question}` },
-              ],
-            },
-          })
-          const parts = res?.data?.parts ?? res?.parts ?? []
-          return parts
-            .filter((p) => p.type === "text")
-            .map((p) => p.text ?? "")
-            .join("\n")
-            .trim()
-        })(),
+        prompt,
         new Promise((_, reject) =>
-          setTimeout(() => reject(new Error(`timed out after ${timeoutMs}ms`)), timeoutMs),
+          setTimeout(() => {
+            timedOut = true
+            client.session.abort({ path: { id: sessionID } }).catch(() => {})
+            reject(new Error(`timed out after ${timeoutMs}ms`))
+          }, timeoutMs),
         ),
       ])
     } finally {
-      if (sessionID) {
-        relaySessionIDs.delete(sessionID)
-        client.session.delete({ path: { id: sessionID } }).catch(() => {})
+      if (timedOut) {
+        prompt.catch(() => {}).finally(cleanup)
+      } else {
+        cleanup()
       }
     }
   }
@@ -161,8 +180,10 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
             return "No pasted image is available in this session (none found, or it expired)."
           }
           const idx = args?.imageIndex ?? 0
-          const target = entry.images[Math.min(Math.max(idx, 0), entry.images.length - 1)]
-          if (!target) return "No pasted image is available in this session."
+          if (!Number.isInteger(idx) || idx < 0 || idx >= entry.images.length) {
+            return `No pasted image at imageIndex ${idx}. Available: 0-${entry.images.length - 1} (0 = most recent).`
+          }
+          const target = entry.images[idx]
           const question = String(args?.question ?? "").trim() || "Describe the image plainly."
           try {
             const answer = await relayImage(target, question)
@@ -195,12 +216,18 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
 
       prune()
       const entry = pendingImages.get(input.sessionID)
-      const images = [
-        ...imageParts.map((p) => ({ mime: p.mime, filename: p.filename, url: p.url })),
-        ...(entry?.images ?? []),
-      ].slice(0, MAX_PENDING_IMAGES)
+      const incoming = imageParts.map((p) => ({ mime: p.mime, filename: p.filename, url: p.url }))
+      const byMessage = new Map()
+      if (entry?.byMessage) {
+        for (const [mid, idxs] of entry.byMessage) {
+          byMessage.set(mid, idxs.map((i) => i + incoming.length))
+        }
+      }
+      byMessage.set(input.messageID, incoming.map((_, i) => i))
+      const images = [...incoming, ...(entry?.images ?? [])].slice(0, MAX_PENDING_IMAGES)
       pendingImages.set(input.sessionID, {
         images,
+        byMessage,
         ts: Date.now(),
       })
 
@@ -225,7 +252,9 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
         const imageParts = parts.filter(isImagePart)
         if (imageParts.length === 0) continue
 
-        const note = makeNote(imageParts.length)
+        const stashEntry = pendingImages.get(sessionID)
+        const indices = stashEntry?.byMessage?.get(message.info.id)
+        const note = makeNote(imageParts.length, indices)
         parts.splice(
           0,
           parts.length,

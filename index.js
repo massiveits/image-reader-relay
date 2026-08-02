@@ -76,6 +76,10 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
     if (!model) return false
     const key = `${model.providerID}/${model.modelID}`
     if (visionCache.has(key)) return visionCache.get(key)
+    const cacheNegative = () => {
+      visionCache.set(key, false)
+      setTimeout(() => visionCache.delete(key), 60_000)
+    }
     try {
       const res = await client.config.providers()
       const providers = res?.data?.providers ?? res?.providers ?? []
@@ -89,8 +93,9 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
         }
       }
     } catch {
-      // provider lookup failed; treat as non-vision and retry on the next message (not cached)
+      // provider lookup failed
     }
+    cacheNegative()
     return false
   }
 
@@ -139,7 +144,9 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
       ])
     } finally {
       if (timedOut) {
-        prompt.catch(() => {}).finally(cleanup)
+        Promise.race([prompt, new Promise((r) => setTimeout(r, timeoutMs))])
+          .catch(() => {})
+          .finally(cleanup)
       } else {
         cleanup()
       }
@@ -225,6 +232,11 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
       }
       byMessage.set(input.messageID, incoming.map((_, i) => i))
       const images = [...incoming, ...(entry?.images ?? [])].slice(0, MAX_PENDING_IMAGES)
+      for (const [mid, idxs] of byMessage) {
+        const kept = idxs.filter((i) => i < images.length)
+        if (kept.length === 0) byMessage.delete(mid)
+        else byMessage.set(mid, kept)
+      }
       pendingImages.set(input.sessionID, {
         images,
         byMessage,

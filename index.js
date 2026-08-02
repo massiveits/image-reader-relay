@@ -39,12 +39,15 @@ const newPartID = () => {
 }
 
 const makeNote = (count, indices) => {
+  if (!indices || indices.length === 0) {
+    return count > 1
+      ? `[${count} images were pasted in this message. The main model cannot see them directly, and they are no longer available for inspection.]`
+      : "[An image was pasted in this message. The main model cannot see it directly, and it is no longer available for inspection.]"
+  }
   const indexText =
-    indices && indices.length > 0
-      ? indices.length === 1
-        ? `imageIndex ${indices[0]}`
-        : `imageIndex ${indices.join(" or ")}`
-      : "imageIndex 0 for the most recent image"
+    indices.length === 1
+      ? `imageIndex ${indices[0]}`
+      : `imageIndex ${indices.join(" or ")}`
   return count > 1
     ? `[${count} images were pasted in this message. The main model cannot see them directly. Use the read_image tool to inspect them: pass the exact question you want answered about them, and ${indexText}.]`
     : "[An image was pasted in this message. The main model cannot see it directly. " +

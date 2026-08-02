@@ -14,6 +14,7 @@ Rules:
 
 const relaySessionIDs = new Set()
 const visionCache = new Map()
+const sessionModels = new Map()
 
 const pendingImages = new Map()
 const MAX_PENDING_IMAGES = 10
@@ -37,6 +38,13 @@ const newPartID = () => {
   return `prt_${hex}${r}`
 }
 
+const makeNote = (count) =>
+  count > 1
+    ? `[${count} images were pasted in this message. The main model cannot see them directly. Use the read_image tool to inspect them: pass the exact question you want answered about them, and imageIndex 0 for the most recent image.]`
+    : "[An image was pasted in this message. The main model cannot see it directly. " +
+      "Use the read_image tool to inspect it: pass the exact question you want answered " +
+      "about the image, and imageIndex 0 for this (most recent) image.]"
+
 const parseModel = (spec) => {
   const idx = spec.indexOf("/")
   if (idx <= 0 || idx === spec.length - 1) {
@@ -53,7 +61,10 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
   const log = (level, message, extra) =>
     client.app.log({ body: { service: "image-reader-relay", level, message, extra } })
 
-  await log("info", "image-reader-relay loaded", { model: modelSpec, timeoutMs })
+  await log("info", "image-reader-relay v7 loaded (images stay in chat)", {
+    model: modelSpec,
+    timeoutMs,
+  })
 
   const modelSupportsImages = async (model) => {
     if (!model) return false
@@ -170,7 +181,12 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
 
       const parts = output.parts
       const imageParts = parts.filter(isImagePart)
-      if (imageParts.length === 0) return
+      if (imageParts.length === 0) {
+        sessionModels.set(input.sessionID, input.model)
+        return
+      }
+
+      sessionModels.set(input.sessionID, input.model)
 
       if (await modelSupportsImages(input.model)) {
         await log("info", "skip: model supports images", { model: input.model })
@@ -188,40 +204,40 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
         ts: Date.now(),
       })
 
-      await log("info", "hook: stashed pasted image", {
+      await log("info", "hook: stashed pasted image (kept in chat)", {
         sessionID: input.sessionID,
         images: imageParts.length,
         total: images.length,
         model: input.model,
-        textParts: parts.filter((p) => p.type === "text").length,
       })
+    },
+    "experimental.chat.messages.transform": async (input, output) => {
+      for (const message of output.messages ?? []) {
+        const sessionID = message?.info?.sessionID
+        if (sessionID && relaySessionIDs.has(sessionID)) continue
+        if (message?.info?.role !== "user" && message?.info?.role !== "local") continue
 
-      const count = imageParts.length
-      const note =
-        count > 1
-          ? `[${count} images were pasted in this message. The main model cannot see them directly. Use the read_image tool to inspect them: pass the exact question you want answered about them, and imageIndex 0 for the most recent image.]`
-          : "[An image was pasted in this message. The main model cannot see it directly. " +
-            "Use the read_image tool to inspect it: pass the exact question you want answered " +
-            "about the image, and imageIndex 0 for this (most recent) image.]"
+        const model = sessionModels.get(sessionID)
+        if (model && (await modelSupportsImages(model))) continue
 
-      const result = [
-        ...parts.filter((p) => !isImagePart(p)),
-        {
-          id: newPartID(),
-          sessionID: input.sessionID,
-          messageID: input.messageID ?? parts[0]?.messageID,
-          type: "text",
-          text: note,
-        },
-      ]
-      output.parts.splice(0, output.parts.length, ...result)
+        const parts = message.parts
+        if (!Array.isArray(parts)) continue
+        const imageParts = parts.filter(isImagePart)
+        if (imageParts.length === 0) continue
 
-      await log("info", "hook: parts rebuilt", {
-        before: parts.length,
-        after: result.length,
-        notes: imageParts.length,
-        keptTextParts: result.filter((p) => p.type === "text" && p.text !== note).length,
-      })
+        const note = makeNote(imageParts.length)
+        parts.splice(
+          0,
+          parts.length,
+          ...parts.filter((p) => !isImagePart(p)),
+          { type: "text", text: note },
+        )
+
+        await log("info", "transform: swapped images for note (model view only)", {
+          sessionID,
+          images: imageParts.length,
+        })
+      }
     },
   }
 }

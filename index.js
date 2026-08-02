@@ -22,6 +22,21 @@ const PENDING_TTL_MS = 30 * 60 * 1000
 const isImagePart = (p) =>
   p.type === "file" && typeof p.mime === "string" && p.mime.startsWith("image/")
 
+const ID_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+const newPartID = () => {
+  const now = BigInt(Date.now() + 1) * BigInt(0x1000) + 1n
+  let hex = ""
+  for (let i = 0; i < 6; i++) {
+    const b = Number((now >> BigInt(40 - 8 * i)) & BigInt(0xff))
+    hex += b.toString(16).padStart(2, "0")
+  }
+  let r = ""
+  const bytes = crypto.getRandomValues(new Uint8Array(14))
+  for (let i = 0; i < 14; i++) r += ID_CHARS[bytes[i] % 62]
+  return `prt_${hex}${r}`
+}
+
 const parseModel = (spec) => {
   const idx = spec.indexOf("/")
   if (idx <= 0 || idx === spec.length - 1) {
@@ -189,13 +204,12 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
             "Use the read_image tool to inspect it: pass the exact question you want answered " +
             "about the image, and imageIndex 0 for this (most recent) image.]"
 
-      const first = imageParts[0]
       const result = [
         ...parts.filter((p) => !isImagePart(p)),
         {
-          id: first.id,
-          sessionID: first.sessionID ?? input.sessionID,
-          messageID: first.messageID ?? input.messageID,
+          id: newPartID(),
+          sessionID: input.sessionID,
+          messageID: input.messageID ?? parts[0]?.messageID,
           type: "text",
           text: note,
         },

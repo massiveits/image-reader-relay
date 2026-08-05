@@ -211,7 +211,7 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
     tool: {
       read_image: {
         description:
-          "Inspect an image the user pasted in this session, or an image file on disk. The main model cannot see images directly, so call this tool whenever the conversation requires knowing what an image contains. Pass the exact question you want answered about the image. Pass filePath to read an image file from disk (e.g. a tool's screenshot); otherwise pass an empty string to use a pasted image.",
+          "Inspect an image the user pasted in this session, or an image file on disk. The main model cannot see images directly, so call this tool whenever the conversation requires knowing what an image contains. Pass the exact question you want answered about the image. For an image pasted in this session, omit filePath (or pass an empty string) and pass imageIndex (0 = most recent). Pass filePath ONLY to read an image file from disk (e.g. a tool's screenshot).",
         args: {
           question: {
             type: "string",
@@ -219,7 +219,7 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
           },
           filePath: {
             type: "string",
-            description: "Absolute path to an image file on disk. Pass an empty string to use a pasted image instead.",
+            description: "Absolute path to an image file on disk. Omit, or pass an empty string, to use a pasted image instead.",
           },
           imageIndex: {
             type: "number",
@@ -228,21 +228,47 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
         },
         async execute(args, ctx) {
           const question = String(args?.question ?? "").trim() || "Describe the image plainly."
+          const filePathArg = typeof args?.filePath === "string" ? args.filePath.trim() : ""
+          const entry = () => {
+            prune(ctx.sessionID)
+            return pendingImages.get(ctx.sessionID)
+          }
+          const pastedImage = (idx) => {
+            const e = entry()
+            if (!e || e.images.length === 0) return null
+            if (!Number.isInteger(idx) || idx < 0 || idx >= e.images.length) return null
+            return e.images[idx]
+          }
+
           let filePart
           try {
-            if (args?.filePath) {
-              filePart = await filePartFromPath(String(args.filePath), ctx.directory)
+            if (filePathArg !== "") {
+              try {
+                filePart = await filePartFromPath(filePathArg, ctx.directory)
+              } catch (err) {
+                const fallback = pastedImage(args?.imageIndex ?? 0)
+                if (fallback) {
+                  filePart = fallback
+                } else {
+                  const e = entry()
+                  const avail =
+                    e && e.images.length > 0
+                      ? ` Available pasted images: 0-${e.images.length - 1}.`
+                      : " No pasted image is available in this session."
+                  return `[Image Reader] "${filePathArg}" is not a readable image file (${String(err)}).${avail}`
+                }
+              }
             } else {
-              prune(ctx.sessionID)
-              const entry = pendingImages.get(ctx.sessionID)
-              if (!entry || entry.images.length === 0) {
-                return "No pasted image is available in this session (none found, or it expired). Pass filePath to read an image from disk instead."
-              }
               const idx = args?.imageIndex ?? 0
-              if (!Number.isInteger(idx) || idx < 0 || idx >= entry.images.length) {
-                return `No pasted image at imageIndex ${idx}. Available: 0-${entry.images.length - 1} (0 = most recent).`
+              const pasted = pastedImage(idx)
+              if (!pasted) {
+                const e = entry()
+                if (!e || e.images.length === 0) {
+                  return "No pasted image is available in this session (none found, or it expired). Pass filePath to read an image from disk instead."
+                }
+                return `No pasted image at imageIndex ${idx}. Available: 0-${e.images.length - 1} (0 = most recent).`
               }
-              filePart = entry.images[idx]
+              filePart = pasted
             }
           } catch (err) {
             return `[Image Reader] ${String(err)}`

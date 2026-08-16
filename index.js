@@ -109,7 +109,7 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
   const log = (level, message, extra) =>
     client.app.log({ body: { service: "image-reader-relay", level, message, extra } })
 
-  await log("info", "image-reader-relay v9 loaded (images stay in chat)", {
+  await log("info", "image-reader-relay v10 loaded (images stay in chat)", {
     model: modelSpec,
     timeoutMs,
   })
@@ -118,6 +118,20 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
     if (!model) return false
     const key = `${model.providerID}/${model.modelID}`
     if (visionCache.has(key)) return visionCache.get(key)
+    const describeCapabilities = (value) => ({
+      keys: value && typeof value === "object" ? Object.keys(value) : [],
+      input: value?.input,
+      attachment: value?.attachment,
+      modalities: value?.modalities,
+    })
+    await log("info", "checking model image capability", {
+      model: {
+        providerID: model.providerID,
+        modelID: model.modelID,
+        keys: Object.keys(model),
+        capabilities: describeCapabilities(model.capabilities),
+      },
+    })
     const directCapabilities = model.capabilities
     if (directCapabilities) {
       const supports = !!(
@@ -142,6 +156,11 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
             found?.capabilities?.input?.image ||
             found?.capabilities?.attachment
           )
+          await log("info", "resolved model image capability", {
+            model: `${model.providerID}/${model.modelID}`,
+            capabilities: describeCapabilities(found.capabilities),
+            supportsImages: supports,
+          })
           visionCache.set(key, supports)
           return supports
         }

@@ -2,6 +2,7 @@ import { readFile, stat } from "node:fs/promises"
 import { resolve } from "node:path"
 
 const DEFAULT_MODEL = "clinepass/cline-pass/mimo-v2.5"
+const PLUGIN_VERSION = "1.1.3"
 
 const IMAGE_READER_SYSTEM_PROMPT = `You are a vision-capable image reader agent. Your only job is to read images and report what you see.
 
@@ -44,17 +45,17 @@ const newPartID = () => {
 const makeNote = (count, indices) => {
   if (!indices || indices.length === 0) {
     return count > 1
-      ? `[${count} images were pasted in this message. The main model cannot see them directly, and they are no longer available for inspection.]`
-      : "[An image was pasted in this message. The main model cannot see it directly, and it is no longer available for inspection.]"
+      ? `[image-reader-relay v${PLUGIN_VERSION}] ${count} images were pasted in this message. The main model cannot see them directly, and they are no longer available for inspection.`
+      : `[image-reader-relay v${PLUGIN_VERSION}] An image was pasted in this message. The main model cannot see it directly, and it is no longer available for inspection.`
   }
   const indexText =
     indices.length === 1
       ? `imageIndex ${indices[0]}`
       : `imageIndex ${indices.join(" or ")}`
   return count > 1
-    ? `[${count} images were pasted in this message. The main model cannot see them directly. Use the read_image tool to inspect them: pass the exact question you want answered about them, and ${indexText}.]`
-    : "[An image was pasted in this message. The main model cannot see it directly. " +
-      `Use the read_image tool to inspect it: pass the exact question you want answered about the image, and ${indexText}.]`
+    ? `[image-reader-relay v${PLUGIN_VERSION}] ${count} images were pasted in this message. The main model cannot see them directly. Use the read_image tool to inspect them: pass the exact question you want answered about them, and ${indexText}.`
+    : `[image-reader-relay v${PLUGIN_VERSION}] An image was pasted in this message. The main model cannot see it directly. ` +
+      `Use the read_image tool to inspect it: pass the exact question you want answered about the image, and ${indexText}.`
 }
 
 const parseModel = (spec) => {
@@ -98,8 +99,8 @@ const filePartFromPath = async (filePath, baseDir) => {
 
 const makeToolNote = (count) =>
   count > 1
-    ? `[${count} images appear in this message. The main model cannot see them directly. Use the read_image tool with the filePath argument to inspect them.]`
-    : "[An image appears in this message. The main model cannot see it directly. Use the read_image tool with its filePath argument to inspect it.]"
+    ? `[image-reader-relay v${PLUGIN_VERSION}] ${count} images appear in this message. The main model cannot see them directly. Use the read_image tool with the filePath argument to inspect them.`
+    : `[image-reader-relay v${PLUGIN_VERSION}] An image appears in this message. The main model cannot see it directly. Use the read_image tool with its filePath argument to inspect it.`
 
 const ImageReaderRelay = async ({ client }, rawOptions) => {
   const options = rawOptions ?? {}

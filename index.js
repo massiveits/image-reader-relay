@@ -2,7 +2,7 @@ import { appendFile, readFile, stat } from "node:fs/promises"
 import { resolve } from "node:path"
 
 const DEFAULT_MODEL = "clinepass/cline-pass/mimo-v2.5"
-const PLUGIN_VERSION = "1.1.4"
+const PLUGIN_VERSION = "1.1.5"
 const DEBUG_LOG = "/tmp/image-reader-relay-debug.log"
 
 const IMAGE_READER_SYSTEM_PROMPT = `You are a vision-capable image reader agent. Your only job is to read images and report what you see.
@@ -129,7 +129,7 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
   const log = (level, message, extra) =>
     client.app.log({ body: { service: "image-reader-relay", level, message, extra } })
 
-  await log("info", "image-reader-relay v11 loaded (images stay in chat)", {
+  await log("info", "image-reader-relay v12 loaded (images stay in chat)", {
     model: modelSpec,
     timeoutMs,
   })
@@ -180,20 +180,27 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
       const providers = res?.data?.providers ?? res?.providers ?? []
       for (const provider of providers) {
         if (provider.id !== model.providerID) continue
-        const found = (provider.models ?? []).find((m) => m.id === model.modelID)
+        const modelCatalog = provider.models ?? {}
+        const found = Array.isArray(modelCatalog)
+          ? modelCatalog.find((m) => m.id === model.modelID)
+          : modelCatalog[model.modelID]
         if (found) {
+          const capabilities = found.capabilities ?? found
           const supports = !!(
-            found?.capabilities?.input?.image ||
-            found?.capabilities?.attachment
+            capabilities.input?.image ||
+            (Array.isArray(capabilities.input) && capabilities.input.includes("image")) ||
+            capabilities.modalities?.input?.includes?.("image") ||
+            capabilities.attachment ||
+            found.modalities?.input?.includes?.("image")
           )
           await log("info", "resolved model image capability", {
             model: `${model.providerID}/${model.modelID}`,
-            capabilities: describeCapabilities(found.capabilities),
+            capabilities: describeCapabilities(capabilities),
             supportsImages: supports,
           })
           visionCache.set(key, supports)
           await writeDebug("provider-result", {
-            capabilities: describeCapabilities(found.capabilities),
+            capabilities: describeCapabilities(capabilities),
             supportsImages: supports,
           })
           return supports

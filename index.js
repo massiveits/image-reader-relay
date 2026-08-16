@@ -1,9 +1,8 @@
-import { appendFile, readFile, stat } from "node:fs/promises"
-import { resolve } from "node:path"
+import { readFile, stat } from "node:fs/promises"
+import { basename, resolve } from "node:path"
 
-const DEFAULT_MODEL = "clinepass/cline-pass/mimo-v2.5"
-const PLUGIN_VERSION = "1.1.5"
-const DEBUG_LOG = "/tmp/image-reader-relay-debug.log"
+const DEFAULT_MODEL = "opencode-go/mimo-v2.5"
+const PLUGIN_VERSION = "1.1.7"
 
 const IMAGE_READER_SYSTEM_PROMPT = `You are a vision-capable image reader agent. Your only job is to read images and report what you see.
 
@@ -27,21 +26,6 @@ const PENDING_TTL_MS = 30 * 60 * 1000
 
 const isImagePart = (p) =>
   p.type === "file" && typeof p.mime === "string" && p.mime.startsWith("image/")
-
-const ID_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-
-const newPartID = () => {
-  const now = BigInt(Date.now() + 1) * BigInt(0x1000) + 1n
-  let hex = ""
-  for (let i = 0; i < 6; i++) {
-    const b = Number((now >> BigInt(40 - 8 * i)) & BigInt(0xff))
-    hex += b.toString(16).padStart(2, "0")
-  }
-  let r = ""
-  const bytes = crypto.getRandomValues(new Uint8Array(14))
-  for (let i = 0; i < 14; i++) r += ID_CHARS[bytes[i] % 62]
-  return `prt_${hex}${r}`
-}
 
 const makeNote = (count, indices) => {
   if (!indices || indices.length === 0) {
@@ -93,7 +77,7 @@ const filePartFromPath = async (filePath, baseDir) => {
   return {
     type: "file",
     mime,
-    filename: abs.split("/").pop(),
+    filename: basename(abs),
     url: `data:${mime};base64,${data.toString("base64")}`,
   }
 }
@@ -103,33 +87,15 @@ const makeToolNote = (count) =>
     ? `[image-reader-relay v${PLUGIN_VERSION}] ${count} images appear in this message. The main model cannot see them directly. Use the read_image tool with the filePath argument to inspect them.`
     : `[image-reader-relay v${PLUGIN_VERSION}] An image appears in this message. The main model cannot see it directly. Use the read_image tool with its filePath argument to inspect it.`
 
-const writeDebug = async (event, data = {}) => {
-  try {
-    await appendFile(
-      DEBUG_LOG,
-      `${JSON.stringify({
-        ts: new Date().toISOString(),
-        version: PLUGIN_VERSION,
-        event,
-        ...data,
-      })}\n`,
-    )
-  } catch {
-    // Diagnostics must never affect plugin behavior.
-  }
-}
-
 const ImageReaderRelay = async ({ client }, rawOptions) => {
   const options = rawOptions ?? {}
   const modelSpec = process.env.IMAGE_READER_MODEL ?? options.model ?? DEFAULT_MODEL
   const timeoutMs = options.timeoutMs ?? 60_000
 
-  await writeDebug("loaded", { modelSpec })
-
   const log = (level, message, extra) =>
     client.app.log({ body: { service: "image-reader-relay", level, message, extra } })
 
-  await log("info", "image-reader-relay v12 loaded (images stay in chat)", {
+  await log("info", "image-reader-relay v14 loaded (images stay in chat)", {
     model: modelSpec,
     timeoutMs,
   })
@@ -138,29 +104,6 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
     if (!model) return false
     const key = `${model.providerID}/${model.modelID}`
     if (visionCache.has(key)) return visionCache.get(key)
-    const describeCapabilities = (value) => ({
-      keys: value && typeof value === "object" ? Object.keys(value) : [],
-      input: value?.input,
-      attachment: value?.attachment,
-      modalities: value?.modalities,
-    })
-    await log("info", "checking model image capability", {
-      model: {
-        providerID: model.providerID,
-        modelID: model.modelID,
-        keys: Object.keys(model),
-        capabilities: describeCapabilities(model.capabilities),
-      },
-    })
-    await writeDebug("checking-model", {
-      model: {
-        providerID: model.providerID,
-        modelID: model.modelID,
-        keys: Object.keys(model),
-        capabilities: describeCapabilities(model.capabilities),
-        modalities: model.modalities,
-      },
-    })
     const directCapabilities = model.capabilities
     if (directCapabilities) {
       const supports = !!(
@@ -168,7 +111,6 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
         directCapabilities.attachment
       )
       visionCache.set(key, supports)
-      await writeDebug("direct-result", { supportsImages: supports })
       return supports
     }
     const cacheNegative = () => {
@@ -193,16 +135,7 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
             capabilities.attachment ||
             found.modalities?.input?.includes?.("image")
           )
-          await log("info", "resolved model image capability", {
-            model: `${model.providerID}/${model.modelID}`,
-            capabilities: describeCapabilities(capabilities),
-            supportsImages: supports,
-          })
           visionCache.set(key, supports)
-          await writeDebug("provider-result", {
-            capabilities: describeCapabilities(capabilities),
-            supportsImages: supports,
-          })
           return supports
         }
       }
@@ -210,7 +143,6 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
       // provider lookup failed
     }
     cacheNegative()
-    await writeDebug("negative-result", { supportsImages: false })
     return false
   }
 
@@ -246,22 +178,28 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
     }
 
     let timedOut = false
+    let timeoutID
     try {
       return await Promise.race([
         prompt,
         new Promise((_, reject) =>
-          setTimeout(() => {
+          (timeoutID = setTimeout(() => {
             timedOut = true
             client.session.abort({ path: { id: sessionID } }).catch(() => {})
             reject(new Error(`timed out after ${timeoutMs}ms`))
-          }, timeoutMs),
+          }, timeoutMs)),
         ),
       ])
     } finally {
+      clearTimeout(timeoutID)
       if (timedOut) {
-        Promise.race([prompt, new Promise((r) => setTimeout(r, timeoutMs))])
+        const graceTimer = setTimeout(cleanup, 5_000)
+        prompt
           .catch(() => {})
-          .finally(cleanup)
+          .finally(() => {
+            clearTimeout(graceTimer)
+            cleanup()
+          })
       } else {
         cleanup()
       }
@@ -273,10 +211,15 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
     if (sessionID) {
       const entry = pendingImages.get(sessionID)
       if (entry && now - entry.ts > PENDING_TTL_MS) pendingImages.delete(sessionID)
+      const modelEntry = sessionModels.get(sessionID)
+      if (modelEntry && now - modelEntry.ts > PENDING_TTL_MS) sessionModels.delete(sessionID)
       return
     }
     for (const [sid, entry] of pendingImages) {
       if (now - entry.ts > PENDING_TTL_MS) pendingImages.delete(sid)
+    }
+    for (const [sid, entry] of sessionModels) {
+      if (now - entry.ts > PENDING_TTL_MS) sessionModels.delete(sid)
     }
   }
 
@@ -364,11 +307,11 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
       const parts = output.parts
       const imageParts = parts.filter(isImagePart)
       if (imageParts.length === 0) {
-        sessionModels.set(input.sessionID, input.model)
+        sessionModels.set(input.sessionID, { model: input.model, ts: Date.now() })
         return
       }
 
-      sessionModels.set(input.sessionID, input.model)
+      sessionModels.set(input.sessionID, { model: input.model, ts: Date.now() })
 
       if (await modelSupportsImages(input.model)) {
         await log("info", "skip: model supports images", { model: input.model })
@@ -412,7 +355,8 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
         const isUser = role === "user" || role === "local"
         if (!isUser && role !== "assistant" && role !== "tool") continue
 
-        const model = sessionModels.get(sessionID)
+        const modelEntry = sessionModels.get(sessionID)
+        const model = modelEntry?.model
         if (model && (await modelSupportsImages(model))) continue
 
         const parts = message.parts

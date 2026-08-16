@@ -109,7 +109,7 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
   const log = (level, message, extra) =>
     client.app.log({ body: { service: "image-reader-relay", level, message, extra } })
 
-  await log("info", "image-reader-relay v7 loaded (images stay in chat)", {
+  await log("info", "image-reader-relay v8 loaded (images stay in chat)", {
     model: modelSpec,
     timeoutMs,
   })
@@ -129,7 +129,10 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
         if (provider.id !== model.providerID) continue
         const found = (provider.models ?? []).find((m) => m.id === model.modelID)
         if (found) {
-          const supports = !!(found?.capabilities?.attachment ?? found?.capabilities?.input?.image)
+          const supports = !!(
+            found?.capabilities?.input?.image ||
+            found?.capabilities?.attachment
+          )
           visionCache.set(key, supports)
           return supports
         }

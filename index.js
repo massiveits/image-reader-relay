@@ -2,7 +2,7 @@ import { appendFile, readFile, stat } from "node:fs/promises"
 import { resolve } from "node:path"
 
 const DEFAULT_MODEL = "clinepass/cline-pass/mimo-v2.5"
-const PLUGIN_VERSION = "1.1.3"
+const PLUGIN_VERSION = "1.1.4"
 const DEBUG_LOG = "/tmp/image-reader-relay-debug.log"
 
 const IMAGE_READER_SYSTEM_PROMPT = `You are a vision-capable image reader agent. Your only job is to read images and report what you see.
@@ -129,7 +129,7 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
   const log = (level, message, extra) =>
     client.app.log({ body: { service: "image-reader-relay", level, message, extra } })
 
-  await log("info", "image-reader-relay v10 loaded (images stay in chat)", {
+  await log("info", "image-reader-relay v11 loaded (images stay in chat)", {
     model: modelSpec,
     timeoutMs,
   })

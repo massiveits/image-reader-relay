@@ -109,7 +109,7 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
   const log = (level, message, extra) =>
     client.app.log({ body: { service: "image-reader-relay", level, message, extra } })
 
-  await log("info", "image-reader-relay v8 loaded (images stay in chat)", {
+  await log("info", "image-reader-relay v9 loaded (images stay in chat)", {
     model: modelSpec,
     timeoutMs,
   })
@@ -118,6 +118,15 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
     if (!model) return false
     const key = `${model.providerID}/${model.modelID}`
     if (visionCache.has(key)) return visionCache.get(key)
+    const directCapabilities = model.capabilities
+    if (directCapabilities) {
+      const supports = !!(
+        directCapabilities.input?.image ||
+        directCapabilities.attachment
+      )
+      visionCache.set(key, supports)
+      return supports
+    }
     const cacheNegative = () => {
       visionCache.set(key, false)
       setTimeout(() => visionCache.delete(key), 60_000)

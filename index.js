@@ -1,8 +1,9 @@
-import { readFile, stat } from "node:fs/promises"
+import { appendFile, readFile, stat } from "node:fs/promises"
 import { resolve } from "node:path"
 
 const DEFAULT_MODEL = "clinepass/cline-pass/mimo-v2.5"
 const PLUGIN_VERSION = "1.1.3"
+const DEBUG_LOG = "/tmp/image-reader-relay-debug.log"
 
 const IMAGE_READER_SYSTEM_PROMPT = `You are a vision-capable image reader agent. Your only job is to read images and report what you see.
 
@@ -102,10 +103,28 @@ const makeToolNote = (count) =>
     ? `[image-reader-relay v${PLUGIN_VERSION}] ${count} images appear in this message. The main model cannot see them directly. Use the read_image tool with the filePath argument to inspect them.`
     : `[image-reader-relay v${PLUGIN_VERSION}] An image appears in this message. The main model cannot see it directly. Use the read_image tool with its filePath argument to inspect it.`
 
+const writeDebug = async (event, data = {}) => {
+  try {
+    await appendFile(
+      DEBUG_LOG,
+      `${JSON.stringify({
+        ts: new Date().toISOString(),
+        version: PLUGIN_VERSION,
+        event,
+        ...data,
+      })}\n`,
+    )
+  } catch {
+    // Diagnostics must never affect plugin behavior.
+  }
+}
+
 const ImageReaderRelay = async ({ client }, rawOptions) => {
   const options = rawOptions ?? {}
   const modelSpec = process.env.IMAGE_READER_MODEL ?? options.model ?? DEFAULT_MODEL
   const timeoutMs = options.timeoutMs ?? 60_000
+
+  await writeDebug("loaded", { modelSpec })
 
   const log = (level, message, extra) =>
     client.app.log({ body: { service: "image-reader-relay", level, message, extra } })
@@ -133,6 +152,15 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
         capabilities: describeCapabilities(model.capabilities),
       },
     })
+    await writeDebug("checking-model", {
+      model: {
+        providerID: model.providerID,
+        modelID: model.modelID,
+        keys: Object.keys(model),
+        capabilities: describeCapabilities(model.capabilities),
+        modalities: model.modalities,
+      },
+    })
     const directCapabilities = model.capabilities
     if (directCapabilities) {
       const supports = !!(
@@ -140,6 +168,7 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
         directCapabilities.attachment
       )
       visionCache.set(key, supports)
+      await writeDebug("direct-result", { supportsImages: supports })
       return supports
     }
     const cacheNegative = () => {
@@ -163,6 +192,10 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
             supportsImages: supports,
           })
           visionCache.set(key, supports)
+          await writeDebug("provider-result", {
+            capabilities: describeCapabilities(found.capabilities),
+            supportsImages: supports,
+          })
           return supports
         }
       }
@@ -170,6 +203,7 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
       // provider lookup failed
     }
     cacheNegative()
+    await writeDebug("negative-result", { supportsImages: false })
     return false
   }
 

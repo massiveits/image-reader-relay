@@ -2,7 +2,7 @@ import { readFile, stat } from "node:fs/promises"
 import { basename, resolve } from "node:path"
 
 const DEFAULT_MODEL = "opencode-go/mimo-v2.5"
-const PLUGIN_VERSION = "1.1.7"
+const PLUGIN_VERSION = "1.1.8"
 
 const IMAGE_READER_SYSTEM_PROMPT = `You are a vision-capable image reader agent. Your only job is to read images and report what you see.
 
@@ -95,7 +95,7 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
   const log = (level, message, extra) =>
     client.app.log({ body: { service: "image-reader-relay", level, message, extra } })
 
-  await log("info", "image-reader-relay v14 loaded (images stay in chat)", {
+  await log("info", `image-reader-relay v${PLUGIN_VERSION} loaded (images stay in chat)`, {
     model: modelSpec,
     timeoutMs,
   })
@@ -227,7 +227,7 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
     tool: {
       read_image: {
         description:
-          "Inspect an image the user pasted in this session, or an image file on disk. The main model cannot see images directly, so call this tool whenever the conversation requires knowing what an image contains. Pass the exact question you want answered about the image. For an image pasted in this session, omit filePath (or pass an empty string) and pass imageIndex (0 = most recent). Pass filePath ONLY to read an image file from disk (e.g. a tool's screenshot).",
+          "Inspect an image the user pasted in this session, or an image file on disk, when the main model is not vision-capable. Vision-capable models should answer directly from the image instead of calling this tool. Pass the exact question you want answered about the image. For an image pasted in this session, omit filePath (or pass an empty string) and pass imageIndex (0 = most recent). Pass filePath ONLY to read an image file from disk (e.g. a tool's screenshot).",
         args: {
           question: {
             type: "string",

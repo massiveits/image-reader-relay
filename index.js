@@ -2,7 +2,7 @@ import { readFile, stat } from "node:fs/promises"
 import { basename, resolve } from "node:path"
 
 const DEFAULT_MODEL = "opencode-go/mimo-v2.5"
-const PLUGIN_VERSION = "1.1.10"
+const PLUGIN_VERSION = "1.1.11"
 
 const IMAGE_READER_SYSTEM_PROMPT = `You are a vision-capable image reader agent. Your only job is to read images and report what you see.
 
@@ -19,6 +19,7 @@ Rules:
 const relaySessionIDs = new Set()
 const visionCache = new Map()
 const sessionModels = new Map()
+const sessionDiagnostics = new Map()
 
 const pendingImages = new Map()
 const MAX_PENDING_IMAGES = 10
@@ -27,20 +28,26 @@ const PENDING_TTL_MS = 30 * 60 * 1000
 const isImagePart = (p) =>
   p.type === "file" && typeof p.mime === "string" && p.mime.startsWith("image/")
 
-const makeNote = (count, indices) => {
+const makeNote = (count, indices, debugInfo) => {
+  let baseNote
   if (!indices || indices.length === 0) {
-    return count > 1
+    baseNote = count > 1
       ? `[image-reader-relay v${PLUGIN_VERSION}] ${count} images were pasted in this message. The main model cannot see them directly, and they are no longer available for inspection.`
       : `[image-reader-relay v${PLUGIN_VERSION}] An image was pasted in this message. The main model cannot see it directly, and it is no longer available for inspection.`
+  } else {
+    const indexText =
+      indices.length === 1
+        ? `imageIndex ${indices[0]}`
+        : `imageIndex ${indices.join(" or ")}`
+    baseNote = count > 1
+      ? `[image-reader-relay v${PLUGIN_VERSION}] ${count} images were pasted in this message. The main model cannot see them directly. Use the read_image tool to inspect them: pass the exact question you want answered about them, and ${indexText}.`
+      : `[image-reader-relay v${PLUGIN_VERSION}] An image was pasted in this message. The main model cannot see it directly. ` +
+        `Use the read_image tool to inspect it: pass the exact question you want answered about the image, and ${indexText}.`
   }
-  const indexText =
-    indices.length === 1
-      ? `imageIndex ${indices[0]}`
-      : `imageIndex ${indices.join(" or ")}`
-  return count > 1
-    ? `[image-reader-relay v${PLUGIN_VERSION}] ${count} images were pasted in this message. The main model cannot see them directly. Use the read_image tool to inspect them: pass the exact question you want answered about them, and ${indexText}.`
-    : `[image-reader-relay v${PLUGIN_VERSION}] An image was pasted in this message. The main model cannot see it directly. ` +
-      `Use the read_image tool to inspect it: pass the exact question you want answered about the image, and ${indexText}.`
+  if (debugInfo) {
+    baseNote += `\n\n[image-reader-relay DIAGNOSTICS]\n${JSON.stringify(debugInfo, null, 2)}`
+  }
+  return baseNote
 }
 
 const parseModel = (spec) => {
@@ -82,10 +89,16 @@ const filePartFromPath = async (filePath, baseDir) => {
   }
 }
 
-const makeToolNote = (count) =>
-  count > 1
-    ? `[image-reader-relay v${PLUGIN_VERSION}] ${count} images appear in this message. The main model cannot see them directly. Use the read_image tool with the filePath argument to inspect them.`
-    : `[image-reader-relay v${PLUGIN_VERSION}] An image appears in this message. The main model cannot see it directly. Use the read_image tool with its filePath argument to inspect it.`
+const makeToolNote = (count, debugInfo) => {
+  let baseNote =
+    count > 1
+      ? `[image-reader-relay v${PLUGIN_VERSION}] ${count} images appear in this message. The main model cannot see them directly. Use the read_image tool with the filePath argument to inspect them.`
+      : `[image-reader-relay v${PLUGIN_VERSION}] An image appears in this message. The main model cannot see it directly. Use the read_image tool with its filePath argument to inspect it.`
+  if (debugInfo) {
+    baseNote += `\n\n[image-reader-relay DIAGNOSTICS]\n${JSON.stringify(debugInfo, null, 2)}`
+  }
+  return baseNote
+}
 
 const ImageReaderRelay = async ({ client }, rawOptions) => {
   const options = rawOptions ?? {}
@@ -100,16 +113,18 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
     timeoutMs,
   })
 
-  const modelSupportsImages = async (model) => {
+  const modelSupportsImages = async (model, sessionID) => {
     if (!model) return false
     const key = `${model.providerID}/${model.modelID}`
     if (visionCache.has(key)) return visionCache.get(key)
 
-    await log("info", "debug: modelSupportsImages called", {
+    const diag = {
       model,
       capabilities: model?.capabilities,
       hasDirectCapabilities: Boolean(model?.capabilities),
-    })
+    }
+
+    await log("info", "debug: modelSupportsImages called", diag)
 
     const directCapabilities = model.capabilities
     if (directCapabilities) {
@@ -119,6 +134,8 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
         directCapabilities.modalities?.input?.includes?.("image") ||
         directCapabilities.attachment
       )
+      diag.directCapabilitiesResult = { directCapabilities, supports }
+      if (sessionID) sessionDiagnostics.set(sessionID, diag)
       await log("info", "debug: evaluated directCapabilities", {
         directCapabilities,
         supports,
@@ -133,6 +150,8 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
     try {
       const res = await client.config.providers()
       const providers = res?.data?.providers ?? res?.providers ?? []
+      diag.providersList = providers.map((p) => ({ id: p.id, name: p.name, modelCount: Object.keys(p.models ?? {}).length }))
+
       for (const provider of providers) {
         if (provider.id !== model.providerID) continue
         const modelCatalog = provider.models ?? {}
@@ -140,13 +159,15 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
           ? modelCatalog.find((m) => m.id === model.modelID)
           : modelCatalog[model.modelID]
 
-        await log("info", "debug: evaluated provider catalog model", {
+        diag.matchedProvider = {
           providerID: provider.id,
           modelID: model.modelID,
           foundModel: found,
           foundCapabilities: found?.capabilities,
           foundModalities: found?.modalities,
-        })
+        }
+
+        await log("info", "debug: evaluated provider catalog model", diag.matchedProvider)
 
         if (found) {
           const capabilities = found.capabilities ?? found
@@ -157,6 +178,8 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
             capabilities.attachment ||
             found.modalities?.input?.includes?.("image")
           )
+          diag.catalogSupportsResult = { supports }
+          if (sessionID) sessionDiagnostics.set(sessionID, diag)
           await log("info", "debug: evaluated catalog supports", {
             supports,
           })
@@ -165,8 +188,10 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
         }
       }
     } catch (err) {
+      diag.error = String(err)
       await log("warn", "debug: provider lookup failed", { error: String(err) })
     }
+    if (sessionID) sessionDiagnostics.set(sessionID, diag)
     cacheNegative()
     return false
   }
@@ -238,6 +263,8 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
       if (entry && now - entry.ts > PENDING_TTL_MS) pendingImages.delete(sessionID)
       const modelEntry = sessionModels.get(sessionID)
       if (modelEntry && now - modelEntry.ts > PENDING_TTL_MS) sessionModels.delete(sessionID)
+      const diag = sessionDiagnostics.get(sessionID)
+      if (diag && now - (diag.ts ?? now) > PENDING_TTL_MS) sessionDiagnostics.delete(sessionID)
       return
     }
     for (const [sid, entry] of pendingImages) {
@@ -245,6 +272,9 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
     }
     for (const [sid, entry] of sessionModels) {
       if (now - entry.ts > PENDING_TTL_MS) sessionModels.delete(sid)
+    }
+    for (const [sid, diag] of sessionDiagnostics) {
+      if (now - (diag.ts ?? now) > PENDING_TTL_MS) sessionDiagnostics.delete(sid)
     }
   }
 
@@ -338,7 +368,7 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
 
       sessionModels.set(input.sessionID, { model: input.model, ts: Date.now() })
 
-      if (await modelSupportsImages(input.model)) {
+      if (await modelSupportsImages(input.model, input.sessionID)) {
         await log("info", "skip: model supports images", { model: input.model })
         return
       }
@@ -382,7 +412,7 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
 
         const modelEntry = sessionModels.get(sessionID)
         const model = modelEntry?.model
-        if (model && (await modelSupportsImages(model))) continue
+        if (model && (await modelSupportsImages(model, sessionID))) continue
 
         const parts = message.parts
         if (!Array.isArray(parts)) continue
@@ -390,8 +420,9 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
         if (imageParts.length === 0) continue
 
         const stashEntry = pendingImages.get(sessionID)
+        const diag = sessionDiagnostics.get(sessionID)
         const indices = isUser ? stashEntry?.byMessage?.get(message.info.id) : undefined
-        const note = isUser ? makeNote(imageParts.length, indices) : makeToolNote(imageParts.length)
+        const note = isUser ? makeNote(imageParts.length, indices, diag) : makeToolNote(imageParts.length, diag)
         parts.splice(
           0,
           parts.length,

@@ -2,7 +2,7 @@ import { readFile, stat } from "node:fs/promises"
 import { basename, resolve } from "node:path"
 
 const DEFAULT_MODEL = "opencode-go/mimo-v2.5"
-const PLUGIN_VERSION = "1.1.9"
+const PLUGIN_VERSION = "1.1.10"
 
 const IMAGE_READER_SYSTEM_PROMPT = `You are a vision-capable image reader agent. Your only job is to read images and report what you see.
 
@@ -104,6 +104,13 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
     if (!model) return false
     const key = `${model.providerID}/${model.modelID}`
     if (visionCache.has(key)) return visionCache.get(key)
+
+    await log("info", "debug: modelSupportsImages called", {
+      model,
+      capabilities: model?.capabilities,
+      hasDirectCapabilities: Boolean(model?.capabilities),
+    })
+
     const directCapabilities = model.capabilities
     if (directCapabilities) {
       const supports = !!(
@@ -112,6 +119,10 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
         directCapabilities.modalities?.input?.includes?.("image") ||
         directCapabilities.attachment
       )
+      await log("info", "debug: evaluated directCapabilities", {
+        directCapabilities,
+        supports,
+      })
       visionCache.set(key, supports)
       return supports
     }
@@ -128,6 +139,15 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
         const found = Array.isArray(modelCatalog)
           ? modelCatalog.find((m) => m.id === model.modelID)
           : modelCatalog[model.modelID]
+
+        await log("info", "debug: evaluated provider catalog model", {
+          providerID: provider.id,
+          modelID: model.modelID,
+          foundModel: found,
+          foundCapabilities: found?.capabilities,
+          foundModalities: found?.modalities,
+        })
+
         if (found) {
           const capabilities = found.capabilities ?? found
           const supports = !!(
@@ -137,12 +157,15 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
             capabilities.attachment ||
             found.modalities?.input?.includes?.("image")
           )
+          await log("info", "debug: evaluated catalog supports", {
+            supports,
+          })
           visionCache.set(key, supports)
           return supports
         }
       }
-    } catch {
-      // provider lookup failed
+    } catch (err) {
+      await log("warn", "debug: provider lookup failed", { error: String(err) })
     }
     cacheNegative()
     return false

@@ -2,7 +2,7 @@ import { readFile, stat } from "node:fs/promises"
 import { basename, resolve } from "node:path"
 
 const DEFAULT_MODEL = "opencode-go/mimo-v2.5"
-const PLUGIN_VERSION = "1.1.8"
+const PLUGIN_VERSION = "1.1.9"
 
 const IMAGE_READER_SYSTEM_PROMPT = `You are a vision-capable image reader agent. Your only job is to read images and report what you see.
 
@@ -108,6 +108,8 @@ const ImageReaderRelay = async ({ client }, rawOptions) => {
     if (directCapabilities) {
       const supports = !!(
         directCapabilities.input?.image ||
+        (Array.isArray(directCapabilities.input) && directCapabilities.input.includes("image")) ||
+        directCapabilities.modalities?.input?.includes?.("image") ||
         directCapabilities.attachment
       )
       visionCache.set(key, supports)

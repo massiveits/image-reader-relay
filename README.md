@@ -17,12 +17,9 @@ Add the plugin to your config (`opencode.json` in a project, or global `~/.confi
 
 ```jsonc
 {
-  "plugins": {
-    "image-reader-relay": {
-      "source": "github:massiveits/image-reader-relay",
-      "model": "clinepass/cline-pass/mimo-v2.5"
-    }
-  }
+  "plugin": [
+    ["massiveits/image-reader-relay", { "model": "clinepass/cline-pass/mimo-v2.5" }]
+  ]
 }
 ```
 

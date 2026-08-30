@@ -1,6 +1,6 @@
 # image-reader-relay
 
-Kilo / opencode plugin that lets **text-only models read pasted images** via a vision-capable model.
+Opencode plugin that lets **text-only models read pasted images** via a vision-capable model.
 
 When an image appears in a session whose main model cannot see images (pasted by the user or produced by a tool), the plugin:
 

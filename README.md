@@ -13,13 +13,16 @@ For models that support images natively, the plugin does nothing — the image s
 
 ## Install
 
-Add the plugin to your config (`kilo.json` in a project, or global `~/.config/kilo/kilo.jsonc`):
+Add the plugin to your config (`opencode.json` in a project, or global `~/.config/opencode/opencode.json`):
 
 ```jsonc
 {
-  "plugin": [
-    ["massiveits/image-reader-relay", { "model": "clinepass/cline-pass/mimo-v2.5" }]
-  ]
+  "plugins": {
+    "image-reader-relay": {
+      "source": "github:massiveits/image-reader-relay",
+      "model": "clinepass/cline-pass/mimo-v2.5"
+    }
+  }
 }
 ```
 
@@ -44,5 +47,5 @@ Changing the model later is just editing the `model` option — no plugin file c
 
 ## Requirements
 
-- A main model that supports tool calls (any Kilo model).
+- A main model that supports tool calls.
 - Access to the configured vision model through one of your providers.
